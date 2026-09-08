@@ -9,13 +9,13 @@ torrd.sh installs and configures **nginx** + **Tor**, deploys your site files, a
 ## Quick install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/youruser/torrd/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/Kishan-Agarwal-28/torrd/main/install.sh | sudo bash
 ```
 
 Or download and run manually:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/youruser/torrd/main/torrd.sh -o torrd.sh
+curl -fsSL https://raw.githubusercontent.com/Kishan-Agarwal-28/torrd/main/torrd.sh -o torrd.sh
 chmod +x torrd.sh
 sudo ./torrd.sh --site /path/to/your/site
 ```

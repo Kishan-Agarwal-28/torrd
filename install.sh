@@ -3,17 +3,17 @@
 # install.sh — installer for torrd.sh
 #
 # Usage (one-liner):
-#   curl -fsSL https://raw.githubusercontent.com/youruser/torrd/main/install.sh | sudo bash
+#   curl -fsSL https://raw.githubusercontent.com/Kishan-Agarwal-28/torrd/main/install.sh | sudo bash
 #
 # Or with arguments passed through to torrd.sh after install:
-#   curl -fsSL https://raw.githubusercontent.com/youruser/torrd/main/install.sh \
+#   curl -fsSL https://raw.githubusercontent.com/Kishan-Agarwal-28/torrd/main/install.sh \
 #     | sudo bash -s -- --site /path/to/site --vanity mysite
 # =============================================================================
 
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────────────
-REPO_RAW="https://raw.githubusercontent.com/youruser/torrd/main"
+REPO_RAW="https://raw.githubusercontent.com/Kishan-Agarwal-28/torrd/main"
 INSTALL_DIR="/usr/local/bin"
 SCRIPT_NAME="torrd.sh"
 INSTALL_PATH="${INSTALL_DIR}/${SCRIPT_NAME}"
