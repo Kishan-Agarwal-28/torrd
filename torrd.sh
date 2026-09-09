@@ -17,10 +17,10 @@ die()     { echo -e "${RED}[ERROR]${RESET} $*" >&2; exit 1; }
 # ── Help ──────────────────────────────────────────────────────────────────────
 usage() {
 cat <<EOF
-${BOLD}tor-deploy.sh${RESET} — Deploy a static website as a Tor hidden service
+${BOLD}torrd.sh${RESET} — Deploy a static website as a Tor hidden service
 
 ${BOLD}USAGE${RESET}
-  sudo ./tor-deploy.sh --site <path> [OPTIONS]
+  sudo ./torrd.sh --site <path> [OPTIONS]
 
 ${BOLD}REQUIRED${RESET}
   --site <path>          Path to your website folder (HTML/CSS/JS, etc.)
@@ -58,16 +58,16 @@ ${BOLD}OPTIONS${RESET}
 
 ${BOLD}EXAMPLES${RESET}
   # Minimal — auto-generated .onion
-  sudo ./tor-deploy.sh --site /home/user/mysite
+  sudo ./torrd.sh --site /home/user/mysite
 
   # With a vanity prefix
-  sudo ./tor-deploy.sh --site /home/user/mysite --vanity mysite
+  sudo ./torrd.sh --site /home/user/mysite --vanity mysite
 
   # Custom port + save address to a specific file
-  sudo ./tor-deploy.sh --site ./dist --port 8080 --out /root/my.onion
+  sudo ./torrd.sh --site ./dist --port 8080 --out /root/my.onion
 
   # Already have nginx; just set up Tor
-  sudo ./tor-deploy.sh --site ./dist --skip-nginx
+  sudo ./torrd.sh --site ./dist --skip-nginx
 
 ${BOLD}NOTES${RESET}
   • Must be run as root (or with sudo).
@@ -134,9 +134,19 @@ WEB_ROOT="/var/www/${SITE_NAME}"
 NGINX_CONF="/etc/nginx/sites-available/${SITE_NAME}"
 VANITY_KEY_DIR="/tmp/supremeonionkey"
 
+# ── Detect correct Tor service unit name (FIX: Ubuntu uses tor@default) ───────
+tor_unit() {
+    if systemctl list-units --full --all 2>/dev/null | grep -q "tor@default.service"; then
+        echo "tor@default"
+    else
+        echo "tor"
+    fi
+}
+TOR_UNIT="$(tor_unit)"
+
 # ── Pre-flight summary ────────────────────────────────────────────────────────
 echo ""
-echo -e "${BOLD}tor-deploy.sh — pre-flight check${RESET}"
+echo -e "${BOLD}torrd.sh — pre-flight check${RESET}"
 echo -e "  --site        : ${SITE_DIR}"
 echo -e "  --vanity      : ${VANITY_PREFIX:-"(none — auto-generated)"}"
 echo -e "  --hs-dir      : ${TOR_HS_DIR}"
@@ -145,6 +155,7 @@ echo -e "  --threads     : ${THREADS}"
 echo -e "  --out         : ${OUT_FILE}"
 echo -e "  --skip-nginx  : ${SKIP_NGINX}"
 echo -e "  --skip-tor-repo: ${SKIP_TOR_REPO}"
+echo -e "  tor unit      : ${TOR_UNIT}"
 echo ""
 
 if ! $YES; then
@@ -183,10 +194,14 @@ else
     # Disable the default site
     rm -f /etc/nginx/sites-enabled/default
 
+    # FIX 1: Use default_server so nginx catches all vhosts on this socket,
+    #        including requests whose Host header is the .onion address.
+    # FIX 2: Use server_name _ (catch-all) instead of "localhost" so that
+    #        requests arriving with the .onion Host header are matched correctly.
     cat > "$NGINX_CONF" <<NGINXEOF
 server {
-    listen 127.0.0.1:${PORT};
-    server_name localhost;
+    listen 127.0.0.1:${PORT} default_server;
+    server_name _;
 
     root ${WEB_ROOT};
     index index.html index.htm;
@@ -268,17 +283,24 @@ TOREOF
     success "Tor installed from official Tor Project repo."
 fi
 
+# ── Detect correct Tor unit now that tor is installed ─────────────────────────
+TOR_UNIT="$(tor_unit)"
+info "Using Tor service unit: ${TOR_UNIT}"
+
 # ── Step 5: Configure Tor hidden service ─────────────────────────────────────
 info "Step 5/7 — Configuring Tor hidden service …"
 
 TORRC="/etc/tor/torrc"
 
-# Remove any existing hidden service config for this site then append fresh
-sed -i '/^HiddenServiceDir/d; /^HiddenServicePort/d' "$TORRC"
+# FIX 3: Remove ALL existing HiddenService lines (including those already
+#        present from a previous run) before appending fresh ones.
+#        The original sed only targeted lines starting with the directive,
+#        but could miss lines with leading spaces or inline comments.
+sed -i '/^[[:space:]]*HiddenServiceDir/d; /^[[:space:]]*HiddenServicePort/d' "$TORRC"
 
 cat >> "$TORRC" <<TOREOF
 
-## Hidden service — added by tor-deploy.sh
+## Hidden service — added by torrd.sh
 HiddenServiceDir ${TOR_HS_DIR}
 HiddenServicePort 80 127.0.0.1:${PORT}
 TOREOF
@@ -290,16 +312,18 @@ chown -R debian-tor:debian-tor "$TOR_HS_DIR" 2>/dev/null \
   || true
 chmod 700 "$TOR_HS_DIR"
 
-systemctl enable --now tor
-systemctl restart tor
+# FIX 4: Enable and start the correct unit (tor@default on Ubuntu, tor elsewhere)
+systemctl enable --now "$TOR_UNIT" &>/dev/null
+systemctl restart "$TOR_UNIT"
 
-# Give Tor a moment to generate keys
-info "Waiting for Tor to generate hidden service keys …"
+# Give Tor time to bootstrap and generate keys — poll up to 60 s
+info "Waiting for Tor to bootstrap and generate hidden service keys …"
 for i in {1..30}; do
     [[ -f "${TOR_HS_DIR}/hostname" ]] && break
     sleep 2
 done
-[[ -f "${TOR_HS_DIR}/hostname" ]] || die "Tor did not generate hostname after 60 s. Check: journalctl -u tor"
+[[ -f "${TOR_HS_DIR}/hostname" ]] \
+  || die "Tor did not generate hostname after 60 s. Check: journalctl -u ${TOR_UNIT}"
 
 AUTO_ONION="$(cat "${TOR_HS_DIR}/hostname")"
 success "Hidden service is up: ${BOLD}${AUTO_ONION}${RESET}"
@@ -329,8 +353,6 @@ if [[ -n "$VANITY_PREFIX" ]]; then
     rm -rf "$VANITY_KEY_DIR"
     mkdir -p "$VANITY_KEY_DIR"
 
-    # Mine — use all available threads
-    THREADS="$(nproc)"
     "$MKP" "$VANITY_PREFIX" -v -n 1 -d "$VANITY_KEY_DIR" -t "$THREADS" \
       && MINED=true || MINED=false
 
@@ -343,8 +365,18 @@ if [[ -n "$VANITY_PREFIX" ]]; then
               || chown -R tor:tor "$TOR_HS_DIR" 2>/dev/null \
               || true
             chmod 700 "$TOR_HS_DIR"
-            systemctl restart tor
-            sleep 5
+            chmod 600 "${TOR_HS_DIR}"/*
+
+            # FIX 5: Restart the correct unit and wait long enough for Tor to
+            #        re-announce the new descriptor to the network (was 5 s).
+            systemctl restart "$TOR_UNIT"
+            info "Waiting for Tor to load vanity keys and re-announce …"
+            for i in {1..30}; do
+                NEW_ONION="$(cat "${TOR_HS_DIR}/hostname" 2>/dev/null || true)"
+                [[ "$NEW_ONION" == *"${VANITY_PREFIX}"* ]] && break
+                sleep 2
+            done
+
             FINAL_ONION="$(cat "${TOR_HS_DIR}/hostname")"
             success "Vanity address installed: ${BOLD}${FINAL_ONION}${RESET}"
         else
@@ -359,10 +391,20 @@ fi
 
 # ── Step 7: Summary ───────────────────────────────────────────────────────────
 info "Step 7/7 — Verifying services …"
-systemctl is-active --quiet nginx && success "nginx  → running" \
-                                  || warn    "nginx  → NOT running"
-systemctl is-active --quiet tor   && success "tor    → running" \
-                                  || warn    "tor    → NOT running"
+systemctl is-active --quiet nginx        && success "nginx        → running" \
+                                         || warn    "nginx        → NOT running"
+systemctl is-active --quiet "$TOR_UNIT"  && success "${TOR_UNIT}  → running" \
+                                         || warn    "${TOR_UNIT}  → NOT running"
+
+# Quick local reachability check via Tor SOCKS proxy
+if command -v torsocks &>/dev/null; then
+    info "Testing local reachability via torsocks …"
+    if torsocks curl -sf --max-time 30 "http://${FINAL_ONION}" -o /dev/null; then
+        success "Hidden service responded successfully over Tor."
+    else
+        warn "torsocks curl didn't get a response yet — the descriptor may still be propagating (allow 1–5 min)."
+    fi
+fi
 
 echo ""
 echo -e "${BOLD}${GREEN}════════════════════════════════════════${RESET}"
