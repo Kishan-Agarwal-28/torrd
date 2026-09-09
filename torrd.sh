@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # =============================================================================
-# tor-deploy.sh — Deploy a static site as a Tor hidden service
+# torrd.sh — Deploy a static site as a Tor hidden service
 # =============================================================================
 
 set -euo pipefail
